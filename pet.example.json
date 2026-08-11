@@ -1,0 +1,28 @@
+{
+  "name": "我的桌宠",
+  "video_directory": "videos",
+  "base_scale": 0.25,
+  "default_scale": 1.0,
+  "random_interval_seconds": 60,
+  "random_actions": ["sneeze", "lie_down", "lick_paw", "walk_left", "walk_right"],
+  "walk_actions": {},
+  "chroma_key": {
+    "hue_min": 35,
+    "hue_max": 85,
+    "saturation_min": 40,
+    "brightness_min": 40
+  },
+  "actions": {
+    "idle": { "file": "idle.mp4" },
+    "sneeze": { "file": "sneeze.mp4" },
+    "lie_down": { "file": "lie_down.mp4" },
+    "lick_paw": { "file": "lick_paw.mp4" },
+    "walk_left": { "file": "walk_left.mp4" },
+    "walk_right": { "file": "walk_right.mp4" },
+    "turn_around": { "file": "click.mp4" },
+    "lie_back": { "file": "double_click.mp4" },
+    "sleep": { "file": "sleep.mp4" },
+    "wake_up": { "file": "wake_up.mp4" },
+    "head_turn": { "file": "head_turn.mp4" }
+  }
+}

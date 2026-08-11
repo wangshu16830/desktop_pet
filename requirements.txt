@@ -1,0 +1,6 @@
+# 固定版本：用于 .venv-build 中可复现、独立的打包环境。
+PySide6-Essentials==6.6.3
+shiboken6==6.6.3
+opencv-python-headless==4.9.0.80
+numpy==1.26.4
+PyInstaller==6.6.0

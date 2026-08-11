@@ -1,0 +1,21 @@
+# Python environments and caches
+.venv-build/
+.build_deps/
+__pycache__/
+*.py[cod]
+
+# PyInstaller output and diagnostics
+build/
+dist/
+release/
+debug-build/
+debug-dist/
+debug-spec/
+debug-*.log
+DesktopPet.spec
+
+# Local binaries and operating-system files
+desktop_pet.exe
+*.zip
+Thumbs.db
+Desktop.ini
