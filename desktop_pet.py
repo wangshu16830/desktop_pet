@@ -20,6 +20,7 @@ import random
 import ctypes
 import threading
 import json
+from datetime import datetime
 from enum import Enum, auto
 
 import cv2
@@ -276,6 +277,8 @@ class DesktopPet(QMainWindow):
         # 视频播放
         self.cap = None
         self._loop = True
+        self._play_serial = 0              # 防止旧视频结束事件覆盖新模式
+        self._rendered_serial = -1         # 记录每段视频是否至少成功渲染一帧
         self.video_timer = QTimer(self)
         self.video_timer.timeout.connect(self._on_video_tick)
 
@@ -330,6 +333,12 @@ class DesktopPet(QMainWindow):
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setStyleSheet("background: transparent;")
+        # QLabel 覆盖了整个窗口；将交互事件明确转发给主窗口，
+        # 避免右键菜单或单/双击因事件停在 QLabel 而失效。
+        self.label.mousePressEvent = self.mousePressEvent
+        self.label.mouseMoveEvent = self.mouseMoveEvent
+        self.label.mouseReleaseEvent = self.mouseReleaseEvent
+        self.label.mouseDoubleClickEvent = self.mouseDoubleClickEvent
         self.setCentralWidget(self.label)
 
     def _apply_no_activate(self):
@@ -369,26 +378,34 @@ class DesktopPet(QMainWindow):
         scale_menu = self._context_menu.addMenu("缩放大小")
         sg = QActionGroup(self)
         sg.setExclusive(True)
+        self._scale_actions = {}
         for label, val in [("25%", 0.25), ("50%", 0.50), ("75%", 0.75),
                            ("100%", 1.0), ("125%", 1.25), ("150%", 1.5)]:
             act = scale_menu.addAction(label)
             act.setCheckable(True)
             act.setChecked(abs(val - self.scale) < 1e-3)
-            act.triggered.connect(lambda _checked, v=val: self.set_scale(v))
+            act.toggled.connect(
+                lambda checked, value=val: self._on_scale_action_toggled(value, checked)
+            )
             sg.addAction(act)
+            self._scale_actions[val] = act
 
         # --- 间隔子菜单 ---
         interval_menu = self._context_menu.addMenu("随机切换间隔")
         ig = QActionGroup(self)
         ig.setExclusive(True)
+        self._interval_actions = {}
         for label, ms in [("5 秒", 5_000), ("1 分钟", 60_000),
                           ("5 分钟", 300_000), ("10 分钟", 600_000),
                           ("30 分钟", 1_800_000), ("1 小时", 3_600_000)]:
             act = interval_menu.addAction(label)
             act.setCheckable(True)
             act.setChecked(ms == self.interval_ms)
-            act.triggered.connect(lambda _checked, m=ms: self.set_interval(m))
+            act.toggled.connect(
+                lambda checked, value=ms: self._on_interval_action_toggled(value, checked)
+            )
             ig.addAction(act)
+            self._interval_actions[ms] = act
 
         self._context_menu.addSeparator()
 
@@ -396,14 +413,21 @@ class DesktopPet(QMainWindow):
         mode_menu = self._context_menu.addMenu("模式选择")
         mg = QActionGroup(self)
         mg.setExclusive(True)
+        self._mode_actions = {}
         for label, m in [("随机切换", PetMode.RANDOM),
                          ("睡眠", PetMode.SLEEP),
                          ("鼠标跟随", PetMode.MOUSE_FOLLOW)]:
             act = mode_menu.addAction(label)
             act.setCheckable(True)
             act.setChecked(self.mode == m)
-            act.triggered.connect(lambda _checked, mode=m: self._switch_mode(mode))
+            # 用 toggled 而非 triggered：在 WS_EX_NOACTIVATE 窗口的托盘菜单中，
+            # QAction 的 triggered(bool) 在部分 Windows/PySide6 组合下不稳定，
+            # 但被选中的可勾选动作始终会发出 toggled(True)。
+            act.toggled.connect(
+                lambda checked, mode=m: self._on_mode_action_toggled(mode, checked)
+            )
             mg.addAction(act)
+            self._mode_actions[m] = act
 
         self._context_menu.addSeparator()
 
@@ -445,6 +469,34 @@ class DesktopPet(QMainWindow):
         p.end()
         return QIcon(pm)
 
+    def _write_mode_log(self, message: str):
+        """记录模式菜单事件，便于排查发布版的 Windows 菜单问题。"""
+        try:
+            log_path = os.path.join(get_app_dir(), "desktop_pet.log")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"{timestamp} {message}\n")
+        except OSError:
+            pass
+
+    def _on_mode_action_toggled(self, mode: PetMode, checked: bool):
+        """只响应被选中的模式动作，忽略互斥组取消勾选的动作。"""
+        self._write_mode_log(f"menu toggled: {mode.name}, checked={checked}")
+        if checked:
+            self._switch_mode(mode)
+
+    def _on_scale_action_toggled(self, scale: float, checked: bool):
+        """响应缩放菜单的选中事件。"""
+        self._write_mode_log(f"scale toggled: {scale}, checked={checked}")
+        if checked:
+            self.set_scale(scale)
+
+    def _on_interval_action_toggled(self, ms: int, checked: bool):
+        """响应随机间隔菜单的选中事件。"""
+        self._write_mode_log(f"interval toggled: {ms}, checked={checked}")
+        if checked:
+            self.set_interval(ms)
+
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
             self.show_pet()
@@ -456,21 +508,42 @@ class DesktopPet(QMainWindow):
     def _video_path(self, key: str) -> str:
         return os.path.join(self.video_dir, VIDEO_FILES[key])
 
+    def _stop_video(self):
+        """停止当前视频，并使其尚未处理的结束事件失效。"""
+        self._play_serial += 1
+        self.video_timer.stop()
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+    def _sync_mode_ui(self, status: str = ""):
+        """让菜单勾选和托盘提示反映实际模式。"""
+        for mode, action in self._mode_actions.items():
+            action.setChecked(mode == self.mode)
+        mode_label = {
+            PetMode.RANDOM: "随机切换",
+            PetMode.SLEEP: "睡眠",
+            PetMode.MOUSE_FOLLOW: "鼠标跟随",
+        }[self.mode]
+        suffix = f"（{status}）" if status else ""
+        self.tray.setToolTip(f"{self.pet_name} - {mode_label}{suffix}")
+
     def _play(self, key: str, loop: bool = False):
         path = self._video_path(key)
         if not os.path.isfile(path):
             print(f"[警告] 视频文件不存在: {path}")
+            self._write_mode_log(f"play failed, missing file: {key}")
             return
 
         self.current_action = key
         self._loop = loop
-
-        if self.cap is not None:
-            self.cap.release()
+        self._stop_video()
+        self._play_serial += 1
 
         self.cap = cv2.VideoCapture(path)
         if not self.cap.isOpened():
             print(f"[警告] 无法打开视频: {path}")
+            self._write_mode_log(f"play failed, cannot open: {key}")
             self.cap = None
             return
 
@@ -479,6 +552,7 @@ class DesktopPet(QMainWindow):
             fps = 30
         self.video_timer.setInterval(int(1000 / fps))
         self.video_timer.start()
+        self._write_mode_log(f"play started: {key}, serial={self._play_serial}, fps={fps:.1f}")
 
     def _on_video_tick(self):
         if self.cap is None:
@@ -491,10 +565,10 @@ class DesktopPet(QMainWindow):
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 ret, frame = self.cap.read()
                 if not ret:
-                    self._on_video_finished()
+                    self._on_video_finished(self._play_serial)
                     return
             else:
-                self._on_video_finished()
+                self._on_video_finished(self._play_serial)
                 return
 
         # 先缩放（大幅减少后续抠图处理量）
@@ -514,6 +588,11 @@ class DesktopPet(QMainWindow):
 
         if self.size() != QSize(w, h):
             self.resize(w, h)
+        if self._rendered_serial != self._play_serial:
+            self._rendered_serial = self._play_serial
+            self._write_mode_log(
+                f"first frame rendered: {self.current_action}, serial={self._play_serial}"
+            )
 
     def _walk_move(self, dx: int):
         pos = self.pos()
@@ -522,11 +601,12 @@ class DesktopPet(QMainWindow):
                      min(pos.x() + dx, screen.right() - self.width()))
         self.move(new_x, pos.y())
 
-    def _on_video_finished(self):
-        self.video_timer.stop()
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+    def _on_video_finished(self, serial: int):
+        """仅处理当前播放会话的结束，避免旧动画恢复待机。"""
+        if serial != self._play_serial:
+            return
+        self._write_mode_log(f"video finished: {self.current_action}, state={self.state.name}")
+        self._stop_video()
 
         # 睡眠视频播完 → 停在最后一帧，不恢复待机
         if self.state == PetState.SLEEP:
@@ -621,15 +701,22 @@ class DesktopPet(QMainWindow):
 
     def _switch_mode(self, mode: PetMode):
         if mode == self.mode:
+            self._write_mode_log(f"mode unchanged: {mode.name}")
             return
 
         old_mode = self.mode
+        print(f"[模式] {old_mode.name} -> {mode.name}")
+        self._write_mode_log(f"switch: {old_mode.name} -> {mode.name}")
+        self.random_timer.stop()
+        self._click_timer.stop()
+        self._stop_video()
 
         # 从睡眠切出 → 先播放起床视频，记下目标模式
         if old_mode == PetMode.SLEEP:
             self.mode = mode
             self._pending_mode = mode
             self.state = PetState.WAKING_UP
+            self._sync_mode_ui("起床中")
             self._play("wake_up", loop=False)
             return
 
@@ -639,9 +726,8 @@ class DesktopPet(QMainWindow):
 
         # 进入新模式
         self.mode = mode
+        self._sync_mode_ui()
         if mode == PetMode.SLEEP:
-            self.random_timer.stop()
-            self._click_timer.stop()
             self.state = PetState.SLEEP
             self._play("sleep", loop=False)
         elif mode == PetMode.MOUSE_FOLLOW:
@@ -694,6 +780,7 @@ class DesktopPet(QMainWindow):
             self._head_frame_count = n
             self._head_ready = True
             print(f"[转头] 预处理完成: {n} 帧")
+            self._write_mode_log(f"head frames ready: {n}")
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
@@ -739,6 +826,7 @@ class DesktopPet(QMainWindow):
             # 帧还在预处理 → 待机等待
             self.state = PetState.IDLE
             self._play("idle", loop=True)
+            self._sync_mode_ui("正在准备转头动画")
             self._head_wait_timer = QTimer(self)
             self._head_wait_timer.setSingleShot(False)
             self._head_wait_timer.timeout.connect(self._check_head_ready)
@@ -762,6 +850,8 @@ class DesktopPet(QMainWindow):
         self.state = PetState.IDLE
         self._play("idle", loop=True)
         self.mouse_track_timer.start(33)            # ~30fps
+        self._sync_mode_ui("已启用")
+        self._write_mode_log("mouse tracking started")
 
     def _stop_mouse_follow(self):
         """停止鼠标跟随。"""
