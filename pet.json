@@ -1,6 +1,6 @@
 {
   "name": "阿比西尼亚猫桌宠",
-  "video_directory": ".",
+  "video_directory": "videos",
   "base_scale": 0.25,
   "default_scale": 1.0,
   "random_interval_seconds": 60,

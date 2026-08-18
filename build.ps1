@@ -34,14 +34,16 @@ Copy-Item -Path '.\dist\DesktopPet\*' -Destination $releaseDir -Recurse -Force
 Copy-Item -LiteralPath '.\pet.json' -Destination $releaseDir -Force
 
 $config = Get-Content -LiteralPath '.\pet.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace($config.video_directory) -or $config.video_directory -eq '.') {
+    throw 'pet.json must set video_directory to a dedicated folder such as videos.'
+}
 $assetSource = Join-Path $projectDir $config.video_directory
 if (-not (Test-Path -LiteralPath $assetSource)) {
     throw "Asset directory not found: $assetSource"
 }
-if ($config.video_directory -eq '.') {
-    Get-ChildItem -LiteralPath $assetSource -Filter '*.mp4' | Copy-Item -Destination $releaseDir -Force
-} else {
-    Copy-Item -LiteralPath $assetSource -Destination (Join-Path $releaseDir $config.video_directory) -Recurse -Force
+if ((Get-ChildItem -LiteralPath $assetSource -File -Filter '*.mp4' -Recurse).Count -eq 0) {
+    throw "No MP4 files found in asset directory: $assetSource"
 }
+Copy-Item -LiteralPath $assetSource -Destination (Join-Path $releaseDir $config.video_directory) -Recurse -Force
 
 Write-Host "Build complete: $releaseDir"
